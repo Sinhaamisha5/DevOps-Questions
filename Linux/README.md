@@ -40,7 +40,8 @@ A collection of practical bash scripts for system administration, monitoring, an
 - Linux/Unix operating system
 - Bash 4.0 or higher
 - Root/sudo access (for some scripts)
-- Required commands: `top`, `vmstat`, `free`, `awk`, `curl`
+- Required commands: `top`, `vmstat`, `free`, `awk`, `curl`, `jq`, `rsync`
+- For Weather Fetcher: OpenWeatherMap API key (free at [openweathermap.org](https://openweathermap.org/api))
 
 ## Installation
 
@@ -178,18 +179,55 @@ Top 10 requested URLs:
 
 ### 4. User Management Script
 
-Checks if a user exists and creates it if not found.
+Checks if users exist and creates them if not found, reading from a file.
 
 **File:** `user_check_create.sh`
 
-**Status:** 🚧 To be implemented
+**Input file format (`users.txt`):**
+```
+alice:Alice123
+bob:Bob456
+charlie:Charlie789
+```
 
-**Planned features:**
-- Accept username as parameter
-- Check if user exists using `id` or `/etc/passwd`
-- Create user with `useradd` if not found
-- Set default shell and home directory
-- Log user creation
+**Script:**
+```bash
+#!/bin/bash
+
+FILE="users.txt"
+
+while IFS=: read -r username password; do
+    # Skip empty lines
+    [[ -z "$username" || -z "$password" ]] && continue
+
+    # Check if user exists
+    if id "$username" &>/dev/null; then
+        echo "User '$username' already exists."
+    else
+        # Create user with home directory
+        sudo useradd -m "$username"
+
+        # Set password
+        echo "$username:$password" | sudo chpasswd
+
+        echo "User '$username' created successfully."
+    fi
+done < "$FILE"
+```
+
+**How it works:**
+- `while IFS=: read -r username password` - Reads each line from the file, splitting by `:`
+- `[[ -z "$username" || -z "$password" ]] && continue` - Skips empty or malformed lines
+- `id "$username" &>/dev/null` - Checks if the user exists
+- `useradd -m "$username"` - Creates user with a home directory
+- `echo "$username:$password" | sudo chpasswd` - Sets the password
+- `done < "$FILE"` - Loops through all lines in the file
+
+**Usage:**
+```bash
+# Create users.txt with username:password format
+./user_check_create.sh
+```
 
 ---
 
@@ -199,14 +237,74 @@ Automates backup of `/etc/` directory with date-based filenames.
 
 **File:** `backup_etc.sh`
 
-**Status:** 🚧 To be implemented
+```bash
+#!/bin/bash
 
-**Planned features:**
-- Create compressed backup of `/etc/`
-- Use date-based naming: `etc_backup_YYYY-MM-DD.tar.gz`
-- Store in designated backup directory
-- Optional rotation to keep only last N backups
-- Verification of backup integrity
+# Directory to back up
+SOURCE_DIR="/etc"
+
+# Backup destination
+BACKUP_DIR="/backup"
+
+# Create backup directory if it doesn't exist
+mkdir -p "$BACKUP_DIR"
+
+# Generate date-based filename
+DATE=$(date +%F)  # Format: YYYY-MM-DD
+BACKUP_FILE="$BACKUP_DIR/etc_backup_$DATE.tar.gz"
+
+# Create the backup
+tar -czf "$BACKUP_FILE" "$SOURCE_DIR"
+
+# Optional: log the backup
+echo "$(date): Backup of $SOURCE_DIR completed at $BACKUP_FILE" >> /var/log/backup.log
+```
+
+**How it works:**
+- `SOURCE_DIR="/etc"` - Directory to back up
+- `BACKUP_DIR="/backup"` - Destination directory for backups
+- `mkdir -p "$BACKUP_DIR"` - Ensures the backup directory exists
+- `DATE=$(date +%F)` - Gets current date in YYYY-MM-DD format
+- `tar -czf "$BACKUP_FILE" "$SOURCE_DIR"` - Creates a compressed archive (.tar.gz)
+- Optional logging appends backup info to `/var/log/backup.log`
+
+**Setup cron job:**
+```bash
+# Run daily at 2 AM
+0 2 * * * /path/to/backup_etc.sh
+```
+
+**Enhanced version with retention (keeps last 7 backups):**
+
+```bash
+#!/bin/bash
+
+SOURCE_DIR="/etc"
+BACKUP_DIR="/backup"
+
+mkdir -p "$BACKUP_DIR"
+
+DATE=$(date +%F)
+BACKUP_FILE="$BACKUP_DIR/etc_backup_$DATE.tar.gz"
+
+# Create the backup
+tar -czf "$BACKUP_FILE" "$SOURCE_DIR"
+echo "$(date): Backup of $SOURCE_DIR completed at $BACKUP_FILE" >> /var/log/backup.log
+
+# Keep only the last 7 backups
+cd "$BACKUP_DIR" || exit
+BACKUPS_TO_DELETE=$(ls -1t etc_backup_*.tar.gz | tail -n +8)
+if [ -n "$BACKUPS_TO_DELETE" ]; then
+    echo "$BACKUPS_TO_DELETE" | xargs rm -f
+    echo "$(date): Deleted old backups:" >> /var/log/backup.log
+    echo "$BACKUPS_TO_DELETE" >> /var/log/backup.log
+fi
+```
+
+**Retention explanation:**
+- `ls -1t etc_backup_*.tar.gz` - Lists backups in reverse chronological order (newest first)
+- `tail -n +8` - Skips the first 7 backups, listing the older ones to delete
+- `xargs rm -f` - Deletes those older backups
 
 ---
 
@@ -216,31 +314,125 @@ Menu-driven script for user management operations.
 
 **File:** `user_menu.sh`
 
-**Status:** 🚧 To be implemented
+```bash
+#!/bin/bash
 
-**Planned features:**
-- Add new user
-- Delete existing user
-- List all users
-- Modify user properties
-- Interactive menu interface
+while true; do
+    echo "============================="
+    echo " User Management Menu "
+    echo "============================="
+    echo "1. Add User"
+    echo "2. Delete User"
+    echo "3. List Users"
+    echo "4. Exit"
+    echo "============================="
+    read -p "Enter your choice [1-4]: " choice
+
+    case $choice in
+        1)
+            read -p "Enter username to add: " username
+            if id "$username" &>/dev/null; then
+                echo "User '$username' already exists."
+            else
+                sudo useradd -m "$username"
+                echo "User '$username' added successfully."
+            fi
+            ;;
+        2)
+            read -p "Enter username to delete: " username
+            if id "$username" &>/dev/null; then
+                sudo userdel -r "$username"
+                echo "User '$username' deleted successfully."
+            else
+                echo "User '$username' does not exist."
+            fi
+            ;;
+        3)
+            echo "Current system users:"
+            cut -d: -f1 /etc/passwd
+            ;;
+        4)
+            echo "Exiting..."
+            exit 0
+            ;;
+        *)
+            echo "Invalid option. Please choose 1-4."
+            ;;
+    esac
+
+    echo ""
+done
+```
+
+**How it works:**
+- `while true; do ... done` - Keeps showing the menu until user exits
+- `read -p` - Reads user input
+- `case $choice in` - Handles different menu options
+- **Add User:** Checks if user exists with `id`, creates with `useradd -m`
+- **Delete User:** Removes user and home directory with `userdel -r`
+- **List Users:** Extracts usernames from `/etc/passwd` using `cut`
+- **Exit:** Exits the script gracefully
+
+**Usage:**
+```bash
+./user_menu.sh
+```
 
 ---
 
 ### 7. Weather Information Fetcher
 
-Fetches current weather information using a weather API.
+Fetches current weather information using OpenWeatherMap API.
 
 **File:** `weather_fetch.sh`
 
-**Status:** 🚧 To be implemented
+```bash
+#!/bin/bash
 
-**Planned features:**
-- Use `curl` to fetch from weather API (e.g., OpenWeatherMap)
-- Parse JSON response
-- Display temperature, conditions, humidity
-- Accept location as parameter
-- Format output in readable format
+# Replace with your OpenWeatherMap API key
+API_KEY="YOUR_API_KEY"
+
+# Ask for city
+read -p "Enter city name: " CITY
+
+# Fetch weather data in JSON format
+RESPONSE=$(curl -s "http://api.openweathermap.org/data/2.5/weather?q=${CITY}&appid=${API_KEY}&units=metric")
+
+# Parse JSON using jq (recommended)
+TEMP=$(echo "$RESPONSE" | jq '.main.temp')
+DESC=$(echo "$RESPONSE" | jq -r '.weather[0].description')
+HUMIDITY=$(echo "$RESPONSE" | jq '.main.humidity')
+WIND=$(echo "$RESPONSE" | jq '.wind.speed')
+
+# Display the result
+echo "Weather in $CITY:"
+echo "Temperature: $TEMP °C"
+echo "Description: $DESC"
+echo "Humidity: $HUMIDITY %"
+echo "Wind Speed: $WIND m/s"
+```
+
+**How it works:**
+- `curl -s` - Fetches data silently (no progress info)
+- **API URL:** `http://api.openweathermap.org/data/2.5/weather?q=<city>&appid=<API_KEY>&units=metric`
+  - `q=<city>` - City name
+  - `appid=<API_KEY>` - Your API key
+  - `units=metric` - Temperature in Celsius
+- `jq` - Parses JSON output:
+  - `.main.temp` - Temperature
+  - `.weather[0].description` - Weather description
+  - `.main.humidity` - Humidity percentage
+  - `.wind.speed` - Wind speed
+
+**Prerequisites:**
+- Install `jq`: `sudo apt install jq` (Debian/Ubuntu) or `sudo yum install jq` (RHEL/CentOS)
+- Get free API key from [openweathermap.org](https://openweathermap.org/api)
+
+**Usage:**
+```bash
+./weather_fetch.sh
+# Enter city name when prompted
+```
 
 ---
 
@@ -250,13 +442,53 @@ Validates IPv4 addresses using regular expressions.
 
 **File:** `ip_validator.sh`
 
-**Status:** 🚧 To be implemented
+```bash
+#!/bin/bash
 
-**Planned features:**
-- Validate IPv4 format using regex
-- Check for valid octet ranges (0-255)
-- Accept IP as parameter or from stdin
-- Return exit code for use in other scripts
+read -p "Enter an IP address: " ip
+
+# Regular expression for IPv4 validation
+regex="^([0-9]{1,3}\.){3}[0-9]{1,3}$"
+
+if [[ $ip =~ $regex ]]; then
+    # Further check each octet is <= 255
+    valid=true
+    IFS='.' read -r -a octets <<< "$ip"
+    for octet in "${octets[@]}"; do
+        if (( octet < 0 || octet > 255 )); then
+            valid=false
+            break
+        fi
+    done
+
+    if $valid; then
+        echo "Valid IP address."
+    else
+        echo "Invalid IP address: octet out of range (0-255)."
+    fi
+else
+    echo "Invalid IP address: format incorrect."
+fi
+```
+
+**How it works:**
+- `regex="^([0-9]{1,3}\.){3}[0-9]{1,3}$"` - Matches 4 groups of 1-3 digits separated by dots
+- `[[ $ip =~ $regex ]]` - Checks if input matches the regex pattern
+- **Further validation:**
+  - Splits the IP into octets using `IFS='.'`
+  - Checks each octet is between 0 and 255
+- Provides clear messages for valid/invalid IPs
+
+**Usage:**
+```bash
+./ip_validator.sh
+# Enter IP address when prompted
+
+# Examples:
+# Valid: 192.168.1.1
+# Invalid: 256.100.50.25 (256 is out of range)
+# Invalid: 192.168.1 (incomplete format)
+```
 
 ---
 
@@ -266,31 +498,122 @@ Monitors critical services and restarts them if down.
 
 **File:** `service_monitor.sh`
 
-**Status:** 🚧 To be implemented
+```bash
+#!/bin/bash
 
-**Planned features:**
-- Check status of services (ssh, docker, nginx, etc.)
-- Restart service if not running
-- Send alerts or log warnings
-- Support multiple services in one run
-- Configurable service list
+# List of services to monitor
+SERVICES=("ssh" "docker")
+
+for service in "${SERVICES[@]}"; do
+    # Check if the service is active
+    if systemctl is-active --quiet "$service"; then
+        echo "$(date): $service is running."
+    else
+        echo "$(date): $service is down. Restarting..."
+        sudo systemctl restart "$service"
+
+        # Verify restart
+        if systemctl is-active --quiet "$service"; then
+            echo "$(date): $service restarted successfully."
+        else
+            echo "$(date): Failed to restart $service."
+        fi
+    fi
+done
+```
+
+**How it works:**
+- `SERVICES=("ssh" "docker")` - Array of services to monitor
+- `systemctl is-active --quiet "$service"` - Checks if the service is running
+- **If down:**
+  - `sudo systemctl restart "$service"` - Restarts the service
+  - Verifies restart succeeded
+- Logging with `$(date)` tracks when services went down and were restarted
+
+**Setup cron job:**
+```bash
+# Run every 5 minutes
+*/5 * * * * /path/to/service_monitor.sh
+```
+
+**Usage:**
+```bash
+# Edit SERVICES array to monitor your services
+./service_monitor.sh
+
+# Or run with logging
+./service_monitor.sh >> /var/log/service_monitor.log 2>&1
+```
 
 ---
 
 ### 10. Server File Sync
 
-Cron job script to sync files between two servers.
+Cron job script to sync files between two servers using rsync.
 
 **File:** `server_sync.sh`
 
-**Status:** 🚧 To be implemented
+```bash
+#!/bin/bash
 
-**Planned features:**
-- Use `rsync` for efficient file synchronization
-- SSH key-based authentication
-- Bidirectional or unidirectional sync
-- Exclude patterns for sensitive files
-- Logging and error handling
+# Source directory (local)
+SRC_DIR="/path/to/source/"
+
+# Destination (remote)
+DEST_USER="remoteuser"
+DEST_HOST="remote.server.com"
+DEST_DIR="/path/to/destination/"
+
+# Rsync options:
+# -a → archive mode (preserves permissions, timestamps, etc.)
+# -v → verbose
+# -z → compress during transfer
+# -h → human-readable
+# --delete → delete files at destination if removed at source
+RSYNC_OPTIONS="-avzh --delete"
+
+# Run rsync
+rsync $RSYNC_OPTIONS "$SRC_DIR" "$DEST_USER@$DEST_HOST:$DEST_DIR"
+
+# Optional logging
+echo "$(date): Rsync from $SRC_DIR to $DEST_USER@$DEST_HOST:$DEST_DIR completed." >> /var/log/rsync_sync.log
+```
+
+**How it works:**
+- `SRC_DIR` - The local directory to sync
+- `DEST_USER` and `DEST_HOST` - Credentials for the remote server
+- **Rsync options:**
+  - `-a` - Archive mode (preserves permissions, timestamps, symlinks)
+  - `-v` - Verbose output
+  - `-z` - Compress data during transfer
+  - `-h` - Human-readable output
+  - `--delete` - Deletes files at destination that no longer exist at source
+- Logging tracks sync operations
+
+**Prerequisites:**
+- SSH key-based authentication set up between servers
+- `rsync` installed on both systems
+
+**Setup SSH keys:**
+```bash
+# Generate SSH key (if not exists)
+ssh-keygen -t rsa -b 4096
+
+# Copy to remote server
+ssh-copy-id remoteuser@remote.server.com
+```
+
+**Setup cron job:**
+```bash
+# Run daily at 2 AM
+0 2 * * * /path/to/server_sync.sh
+```
+
+**Usage:**
+```bash
+# Edit source and destination paths in the script
+./server_sync.sh
+```
 
 ## Contributing
 
